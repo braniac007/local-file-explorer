@@ -1,0 +1,48 @@
+# User uploaded files & directories (prevents leaking private/confidential documents)
+resource/*
+!resource/.gitkeep
+
+# Shared network clipboard data (contains sensitive copied text/tokens/credentials)
+.clipboard_data.json
+*.clipboard_data.json
+
+# Chunk upload temporary files & staging folders
+filehub_chunks_*
+*_chunks_*
+*.part
+*.tmp
+
+# Operating system files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Logs & Error files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment and local server configs
+.env
+.env.local
+.env.*.local
+
+# Editor & IDE workspace settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.zed/
+.agents/
+
+# Temporary & backup files
+*.swp
+*.swo
+*~
+*.bak
