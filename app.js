@@ -2,6 +2,8 @@
  * FileHub File Explorer Client Application
  */
 
+const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content || '';
+
 // Theme management
 const htmlElem = document.documentElement;
 const themeToggleBtn = document.getElementById('themeToggleBtn');
@@ -283,11 +285,11 @@ if (sortSelect) {
         const [field, direction] = sortSelect.value.split('-');
         
         // Sort grid files
-        const gridFiles = document.getElementById('gridFiles');
-        if (gridFiles) {
-            const cards = Array.from(gridFiles.querySelectorAll('.item-card'));
+        const gridFilesEl = document.getElementById('gridFiles');
+        if (gridFilesEl) {
+            const cards = Array.from(gridFilesEl.querySelectorAll('.item-card'));
             cards.sort((a, b) => compareItems(a, b, field, direction));
-            cards.forEach(card => gridFiles.appendChild(card));
+            cards.forEach(card => gridFilesEl.appendChild(card));
         }
 
         // Sort table rows
@@ -333,10 +335,13 @@ window.addEventListener('keydown', (e) => {
             searchInput.select();
         }
     } else if (e.key === 'Escape') {
+        const newFolderMod = document.getElementById('newFolderModal');
         const uploadModal = document.getElementById('uploadModal');
         const previewModal = document.getElementById('previewModal');
         const clipModal = document.getElementById('clipboardModal');
-        if (clipModal && clipModal.classList.contains('active')) {
+        if (newFolderMod && newFolderMod.classList.contains('active')) {
+            closeNewFolderModal();
+        } else if (clipModal && clipModal.classList.contains('active')) {
             closeClipboardModal();
         } else if (uploadModal && uploadModal.classList.contains('active')) {
             closeUploadModal();
@@ -462,8 +467,8 @@ function renderFallback(fileName, downloadUrl, message) {
                 <polyline points="13 2 13 9 20 9"></polyline>
             </svg>
             <h4 style="font-size: 1.1rem; margin-bottom: 0.5rem; color: var(--text-main);">${escapeHtml(fileName)}</h4>
-            <p style="color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1.5rem;">${message}</p>
-            <a href="${downloadUrl}" class="btn-action btn-primary" style="display: inline-flex; width: auto; padding: 0.6rem 1.25rem;">
+            <p style="color: var(--text-muted); font-size: 0.875rem; margin-bottom: 1.5rem;">${escapeHtml(message)}</p>
+            <a href="${escapeHtml(downloadUrl)}" class="btn-action btn-primary" style="display: inline-flex; width: auto; padding: 0.6rem 1.25rem;">
                 Download File
             </a>
         </div>
@@ -497,6 +502,13 @@ const uploadQueueContainer = document.getElementById('uploadQueueContainer');
 const uploadQueueList = document.getElementById('uploadQueueList');
 const uploadQueueSummary = document.getElementById('uploadQueueSummary');
 const startUploadBtn = document.getElementById('startUploadBtn');
+const uploadDirSelect = document.getElementById('uploadDirSelect');
+const uploadTargetLabel = document.getElementById('uploadTargetLabel');
+const newSubfolderBtn = document.getElementById('newSubfolderBtn');
+const newSubfolderForm = document.getElementById('newSubfolderForm');
+const newSubfolderNameInput = document.getElementById('newSubfolderNameInput');
+const confirmSubfolderBtn = document.getElementById('confirmSubfolderBtn');
+const cancelSubfolderBtn = document.getElementById('cancelSubfolderBtn');
 
 let uploadQueue = []; // Array of { id, file, status: 'pending'|'uploading'|'completed'|'error', progress: 0, errorMsg: '' }
 let isUploading = false;
@@ -505,6 +517,7 @@ function openUploadModal() {
     if (!uploadModal) return;
     uploadModal.classList.add('active');
     document.body.style.overflow = 'hidden';
+    loadDirsForPicker(document.body.getAttribute('data-current-dir') || '');
 }
 
 function closeUploadModal() {
@@ -667,7 +680,7 @@ async function startQueuedUploads() {
     isUploading = true;
     if (startUploadBtn) startUploadBtn.disabled = true;
 
-    const currentDir = document.body.getAttribute('data-current-dir') || '';
+    const currentDir = uploadDirSelect?.value ?? document.body.getAttribute('data-current-dir') ?? '';
     let anySuccess = false;
 
     for (const item of uploadQueue) {
@@ -749,6 +762,7 @@ async function uploadSingleFileInChunks(item, targetDir) {
         formData.append('totalSize', totalSize.toString());
         formData.append('dir', targetDir);
         formData.append('chunk', chunkBlob, 'blob');
+        formData.append('csrf_token', csrfToken);
 
         const response = await fetch('index.php', {
             method: 'POST',
@@ -882,6 +896,7 @@ async function saveSharedClipboard() {
         const formData = new FormData();
         formData.append('action', 'save_clipboard');
         formData.append('content', contentToSave);
+        formData.append('csrf_token', csrfToken);
 
         const res = await fetch('index.php', {
             method: 'POST',
@@ -1172,6 +1187,7 @@ if (clipSaveAsFileBtn && clipSaveFileName) {
             formData.append('dir', currentDir);
             formData.append('fileName', fileName);
             formData.append('content', text);
+            formData.append('csrf_token', csrfToken);
 
             const res = await fetch('index.php', {
                 method: 'POST',
@@ -1196,4 +1212,234 @@ if (clipSaveAsFileBtn && clipSaveFileName) {
 // Auto open clipboard if ?clipboard=1 or #clipboard in URL
 if (urlParams.get('clipboard') === '1' || window.location.hash === '#clipboard') {
     openClipboardModal();
+}
+
+// ---------------------------------------------------------------------------
+// Delete Item
+// ---------------------------------------------------------------------------
+async function deleteItem(itemPath, itemName, isDir) {
+    const type = isDir ? 'folder' : 'file';
+    if (!confirm(`Delete ${type} "${itemName}"?\nThis cannot be undone.`)) return;
+
+    try {
+        const formData = new FormData();
+        formData.append('action', 'delete');
+        formData.append('path', itemPath);
+        formData.append('csrf_token', csrfToken);
+
+        const res = await fetch('index.php', { method: 'POST', body: formData });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Delete failed');
+
+        window.location.reload();
+    } catch (err) {
+        alert('Failed to delete: ' + err.message);
+    }
+}
+
+// Expose all functions used in HTML onclick attributes
+window.openPreview = openPreview;
+window.closePreview = closePreview;
+window.copyModalContent = copyModalContent;
+window.handleModalOverlayClick = handleModalOverlayClick;
+window.openUploadModal = openUploadModal;
+window.closeUploadModal = closeUploadModal;
+window.handleUploadModalOverlayClick = handleUploadModalOverlayClick;
+window.startQueuedUploads = startQueuedUploads;
+window.clearUploadQueue = clearUploadQueue;
+window.deleteItem = deleteItem;
+window.closeNewFolderModal = closeNewFolderModal;
+window.handleNewFolderOverlayClick = handleNewFolderOverlayClick;
+
+// ---------------------------------------------------------------------------
+// Directory Picker (upload modal)
+// ---------------------------------------------------------------------------
+async function loadDirsForPicker(basePath) {
+    if (!uploadDirSelect) return;
+    uploadDirSelect.innerHTML = '';
+    const loadingOpt = document.createElement('option');
+    loadingOpt.textContent = 'Loading...';
+    uploadDirSelect.appendChild(loadingOpt);
+
+    try {
+        const res = await fetch('index.php?action=list_dirs&dir=' + encodeURIComponent(basePath) + '&_t=' + Date.now());
+        const data = await res.json();
+        uploadDirSelect.innerHTML = '';
+
+        const curOpt = document.createElement('option');
+        curOpt.value = basePath;
+        curOpt.textContent = (basePath === '' ? '/resource/' : '/resource/' + basePath + '/') + ' \u2014 current folder';
+        curOpt.selected = true;
+        uploadDirSelect.appendChild(curOpt);
+
+        if (data.success) {
+            data.dirs.forEach(dir => {
+                const opt = document.createElement('option');
+                opt.value = dir.path;
+                opt.textContent = '\u00a0\u00a0\u21b3 ' + dir.name + '/';
+                uploadDirSelect.appendChild(opt);
+            });
+        }
+    } catch (e) {
+        uploadDirSelect.innerHTML = '';
+        const fallback = document.createElement('option');
+        fallback.value = basePath;
+        fallback.textContent = basePath || '/resource/';
+        uploadDirSelect.appendChild(fallback);
+    }
+
+    updateUploadTargetLabel();
+}
+
+function updateUploadTargetLabel() {
+    if (!uploadDirSelect || !uploadTargetLabel) return;
+    const val = uploadDirSelect.value;
+    uploadTargetLabel.textContent = 'To: /resource/' + (val ? val + '/' : '');
+}
+
+if (uploadDirSelect) {
+    uploadDirSelect.addEventListener('change', updateUploadTargetLabel);
+}
+
+if (newSubfolderBtn && newSubfolderForm) {
+    newSubfolderBtn.addEventListener('click', () => {
+        newSubfolderForm.style.display = 'flex';
+        if (newSubfolderNameInput) {
+            newSubfolderNameInput.value = '';
+            newSubfolderNameInput.focus();
+        }
+    });
+}
+
+if (cancelSubfolderBtn) {
+    cancelSubfolderBtn.addEventListener('click', () => {
+        if (newSubfolderForm) newSubfolderForm.style.display = 'none';
+        if (newSubfolderNameInput) newSubfolderNameInput.value = '';
+    });
+}
+
+if (confirmSubfolderBtn) {
+    confirmSubfolderBtn.addEventListener('click', createSubfolderForUpload);
+}
+
+if (newSubfolderNameInput) {
+    newSubfolderNameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') createSubfolderForUpload();
+        if (e.key === 'Escape') {
+            if (newSubfolderForm) newSubfolderForm.style.display = 'none';
+        }
+    });
+}
+
+async function createSubfolderForUpload() {
+    const name = newSubfolderNameInput ? newSubfolderNameInput.value.trim() : '';
+    if (!name) {
+        if (newSubfolderNameInput) newSubfolderNameInput.focus();
+        return;
+    }
+    const parentDir = uploadDirSelect ? uploadDirSelect.value : (document.body.getAttribute('data-current-dir') || '');
+
+    if (confirmSubfolderBtn) confirmSubfolderBtn.disabled = true;
+    try {
+        const formData = new FormData();
+        formData.append('action', 'mkdir');
+        formData.append('dir', parentDir);
+        formData.append('name', name);
+        formData.append('csrf_token', csrfToken);
+
+        const res = await fetch('index.php', { method: 'POST', body: formData });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+
+        // Add new dir to picker and select it
+        if (uploadDirSelect) {
+            const opt = document.createElement('option');
+            opt.value = data.path;
+            opt.textContent = '\u00a0\u00a0\u21b3 ' + data.name + '/';
+            opt.selected = true;
+            uploadDirSelect.appendChild(opt);
+            updateUploadTargetLabel();
+        }
+        if (newSubfolderForm) newSubfolderForm.style.display = 'none';
+        if (newSubfolderNameInput) newSubfolderNameInput.value = '';
+    } catch (err) {
+        alert('Failed to create folder: ' + err.message);
+    } finally {
+        if (confirmSubfolderBtn) confirmSubfolderBtn.disabled = false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// New Folder Modal (standalone — creates folder in current directory)
+// ---------------------------------------------------------------------------
+const newFolderModal = document.getElementById('newFolderModal');
+const newFolderNameInput = document.getElementById('newFolderNameInput');
+const confirmNewFolderBtn = document.getElementById('confirmNewFolderBtn');
+const newFolderError = document.getElementById('newFolderError');
+const newFolderBtn = document.getElementById('newFolderBtn');
+
+function openNewFolderModal() {
+    if (!newFolderModal) return;
+    newFolderModal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+    if (newFolderNameInput) newFolderNameInput.value = '';
+    if (newFolderError) newFolderError.style.display = 'none';
+    setTimeout(() => { if (newFolderNameInput) newFolderNameInput.focus(); }, 100);
+}
+
+function closeNewFolderModal() {
+    if (!newFolderModal) return;
+    newFolderModal.classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+function handleNewFolderOverlayClick(e) {
+    if (e.target === newFolderModal) closeNewFolderModal();
+}
+
+if (newFolderBtn) {
+    newFolderBtn.addEventListener('click', openNewFolderModal);
+}
+
+if (newFolderNameInput) {
+    newFolderNameInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') confirmCreateFolder();
+    });
+}
+
+if (confirmNewFolderBtn) {
+    confirmNewFolderBtn.addEventListener('click', confirmCreateFolder);
+}
+
+async function confirmCreateFolder() {
+    const name = newFolderNameInput ? newFolderNameInput.value.trim() : '';
+    if (!name) {
+        if (newFolderError) { newFolderError.textContent = 'Please enter a folder name.'; newFolderError.style.display = 'block'; }
+        return;
+    }
+    if (newFolderError) newFolderError.style.display = 'none';
+
+    const currentDir = document.body.getAttribute('data-current-dir') || '';
+    if (confirmNewFolderBtn) { confirmNewFolderBtn.disabled = true; confirmNewFolderBtn.textContent = 'Creating...'; }
+
+    try {
+        const formData = new FormData();
+        formData.append('action', 'mkdir');
+        formData.append('dir', currentDir);
+        formData.append('name', name);
+        formData.append('csrf_token', csrfToken);
+
+        const res = await fetch('index.php', { method: 'POST', body: formData });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed');
+
+        closeNewFolderModal();
+        window.location.reload();
+    } catch (err) {
+        if (newFolderError) { newFolderError.textContent = err.message; newFolderError.style.display = 'block'; }
+        if (confirmNewFolderBtn) { confirmNewFolderBtn.disabled = false; confirmNewFolderBtn.textContent = 'Create Folder'; }
+    }
 }

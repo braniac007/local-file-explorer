@@ -7,9 +7,15 @@
 
 declare(strict_types=1);
 
+session_start();
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 // Configuration
 define('RESOURCE_DIR', __DIR__ . '/resource');
-define('CLIPBOARD_FILE', __DIR__ . '/.clipboard_data.json');
+// Stored outside web root to prevent direct HTTP access
+define('CLIPBOARD_FILE', sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'filehub_cb_' . md5(__DIR__) . '.json');
 define('APP_NAME', 'FileHub Explorer');
 define('APP_VERSION', '2.1.0');
 define('MAX_UPLOAD_SIZE', 50 * 1024 * 1024); // 50 MB
@@ -173,6 +179,26 @@ function getFileInfo(string $filePath): array {
     ];
 }
 
+// Helper: Validate CSRF token on state-modifying POST requests
+function validateCsrfToken(string $token): bool {
+    return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
+}
+
+// Helper: Recursively delete a file or directory
+function deleteRecursive(string $path): bool {
+    if (is_file($path) || is_link($path)) {
+        return unlink($path);
+    }
+    if (!is_dir($path)) return false;
+    $items = scandir($path);
+    if ($items === false) return false;
+    foreach ($items as $item) {
+        if ($item === '.' || $item === '..') continue;
+        if (!deleteRecursive($path . DIRECTORY_SEPARATOR . $item)) return false;
+    }
+    return rmdir($path);
+}
+
 // ----------------------------------------------------
 // Handle Actions: Upload Chunk, Direct Upload, Download, View, Get Content
 // ----------------------------------------------------
@@ -189,6 +215,10 @@ if ($action === 'get_clipboard') {
 // ACTION: SAVE CLIPBOARD
 if ($action === 'save_clipboard') {
     header('Content-Type: application/json; charset=utf-8');
+    if (!validateCsrfToken($_POST['csrf_token'] ?? '')) {
+        echo json_encode(['success' => false, 'error' => 'Invalid request token.']);
+        exit;
+    }
     $content = (string)($_POST['content'] ?? '');
     
     // Up to 10 MB payload limit for large text / code / logs
@@ -236,6 +266,10 @@ if ($action === 'save_clipboard') {
 // ACTION: CLEAR CLIPBOARD
 if ($action === 'clear_clipboard') {
     header('Content-Type: application/json; charset=utf-8');
+    if (!validateCsrfToken($_POST['csrf_token'] ?? '')) {
+        echo json_encode(['success' => false, 'error' => 'Invalid request token.']);
+        exit;
+    }
     $data = getClipboardData();
     $data['content'] = '';
     $data['updated_at'] = time();
@@ -248,6 +282,10 @@ if ($action === 'clear_clipboard') {
 // ACTION: SAVE CLIPBOARD AS FILE
 if ($action === 'save_clip_file') {
     header('Content-Type: application/json; charset=utf-8');
+    if (!validateCsrfToken($_POST['csrf_token'] ?? '')) {
+        echo json_encode(['success' => false, 'error' => 'Invalid request token.']);
+        exit;
+    }
     $targetSubdir = $_POST['dir'] ?? '';
     $targetDir = resolveSafePath($targetSubdir);
     if (!$targetDir || !is_dir($targetDir)) {
@@ -280,7 +318,10 @@ if ($action === 'save_clip_file') {
 // ACTION: CHUNKED UPLOAD (Handles files up to 50 MB seamlessly)
 if ($action === 'upload_chunk') {
     header('Content-Type: application/json; charset=utf-8');
-    
+    if (!validateCsrfToken($_POST['csrf_token'] ?? '')) {
+        echo json_encode(['success' => false, 'error' => 'Invalid request token.']);
+        exit;
+    }
     $fileId = preg_replace('/[^a-zA-Z0-9_\-]/', '', $_POST['fileId'] ?? '');
     $fileName = basename($_POST['fileName'] ?? '');
     $chunkIndex = (int)($_POST['chunkIndex'] ?? 0);
@@ -371,6 +412,10 @@ if ($action === 'upload_chunk') {
 // ACTION: DIRECT UPLOAD
 if ($action === 'upload') {
     header('Content-Type: application/json; charset=utf-8');
+    if (!validateCsrfToken($_POST['csrf_token'] ?? '')) {
+        echo json_encode(['success' => false, 'error' => 'Invalid request token.']);
+        exit;
+    }
     if (!isset($_FILES['file'])) {
         echo json_encode(['success' => false, 'error' => 'No file received.']);
         exit;
@@ -403,6 +448,91 @@ if ($action === 'upload') {
     exit;
 }
 
+// ACTION: DELETE FILE OR DIRECTORY
+if ($action === 'delete') {
+    header('Content-Type: application/json; charset=utf-8');
+    if (!validateCsrfToken($_POST['csrf_token'] ?? '')) {
+        echo json_encode(['success' => false, 'error' => 'Invalid request token.']);
+        exit;
+    }
+    $targetPath = $_POST['path'] ?? '';
+    $resolved = resolveSafePath($targetPath);
+    if (!$resolved) {
+        echo json_encode(['success' => false, 'error' => 'Path not found or access denied.']);
+        exit;
+    }
+    $realBase = realpath(RESOURCE_DIR);
+    if ($resolved === $realBase) {
+        echo json_encode(['success' => false, 'error' => 'Cannot delete the root resource directory.']);
+        exit;
+    }
+    if (deleteRecursive($resolved)) {
+        echo json_encode(['success' => true]);
+    } else {
+        echo json_encode(['success' => false, 'error' => 'Failed to delete. Check permissions.']);
+    }
+    exit;
+}
+
+// ACTION: CREATE DIRECTORY
+if ($action === 'mkdir') {
+    header('Content-Type: application/json; charset=utf-8');
+    if (!validateCsrfToken($_POST['csrf_token'] ?? '')) {
+        echo json_encode(['success' => false, 'error' => 'Invalid request token.']);
+        exit;
+    }
+    $parentSubdir = $_POST['dir'] ?? '';
+    $newName = trim((string)($_POST['name'] ?? ''));
+    $newName = str_replace(["\0", '/', '\\', '..'], '', $newName);
+    $newName = preg_replace('/[^\w\s\.\-]/u', '_', $newName);
+    $newName = trim($newName, '. ');
+    if ($newName === '') {
+        echo json_encode(['success' => false, 'error' => 'Invalid folder name.']);
+        exit;
+    }
+    $parentDir = resolveSafePath($parentSubdir);
+    if (!$parentDir || !is_dir($parentDir)) {
+        echo json_encode(['success' => false, 'error' => 'Parent directory not found.']);
+        exit;
+    }
+    $newPath = $parentDir . DIRECTORY_SEPARATOR . $newName;
+    if (file_exists($newPath)) {
+        echo json_encode(['success' => false, 'error' => 'A folder with that name already exists.']);
+        exit;
+    }
+    if (@mkdir($newPath, 0755)) {
+        echo json_encode(['success' => true, 'path' => getRelativePath($newPath), 'name' => $newName]);
+    } else {
+        echo json_encode(['success' => false, 'error' => 'Failed to create directory. Check permissions.']);
+    }
+    exit;
+}
+
+// ACTION: LIST SUBDIRECTORIES (for directory picker)
+if ($action === 'list_dirs') {
+    header('Content-Type: application/json; charset=utf-8');
+    $subdir = $_GET['dir'] ?? '';
+    $dirPath = resolveSafePath($subdir);
+    if (!$dirPath || !is_dir($dirPath)) {
+        echo json_encode(['success' => false, 'error' => 'Directory not found.']);
+        exit;
+    }
+    $items = scandir($dirPath);
+    $dirs = [];
+    if ($items !== false) {
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..' || str_starts_with($item, '.')) continue;
+            $full = $dirPath . DIRECTORY_SEPARATOR . $item;
+            if (is_dir($full)) {
+                $dirs[] = ['name' => $item, 'path' => getRelativePath($full)];
+            }
+        }
+    }
+    usort($dirs, fn($a, $b) => strnatcasecmp($a['name'], $b['name']));
+    echo json_encode(['success' => true, 'dirs' => $dirs]);
+    exit;
+}
+
 $targetFile = $_GET['file'] ?? '';
 
 if ($action && $targetFile !== '') {
@@ -426,7 +556,7 @@ if ($action && $targetFile !== '') {
         }
         header('Content-Description: File Transfer');
         header('Content-Type: ' . $info['mime']);
-        header('Content-Disposition: attachment; filename="' . addslashes($filename) . '"');
+        header('Content-Disposition: attachment; filename="' . addslashes($filename) . '"; filename*=UTF-8\'\'' . rawurlencode($filename));
         header('Expires: 0');
         header('Cache-Control: must-revalidate, post-check=0, pre-check=0');
         header('Pragma: public');
@@ -449,7 +579,7 @@ if ($action && $targetFile !== '') {
             $mime = 'application/pdf';
         }
         header('Content-Type: ' . $mime);
-        header('Content-Disposition: inline; filename="' . addslashes($filename) . '"');
+        header('Content-Disposition: inline; filename="' . addslashes($filename) . '"; filename*=UTF-8\'\'' . rawurlencode($filename));
         header('Content-Length: ' . $filesize);
         header('Cache-Control: public, max-age=3600');
         readfile($resolved);
@@ -470,6 +600,10 @@ if ($action && $targetFile !== '') {
         $content = @file_get_contents($resolved);
         if ($content === false) {
             echo json_encode(['success' => false, 'error' => 'Unable to read file.']);
+            exit;
+        }
+        if (!mb_check_encoding($content, 'UTF-8')) {
+            echo json_encode(['success' => false, 'error' => 'File contains binary data and cannot be previewed as text.']);
             exit;
         }
 
@@ -543,19 +677,21 @@ if ($items !== false) {
             $subItems = @scandir($fullItemPath);
             $subCount = ($subItems !== false) ? count(array_filter($subItems, fn($s) => $s !== '.' && $s !== '..' && ($showHidden || !str_starts_with($s, '.')))) : 0;
             
+            $mtime = filemtime($fullItemPath);
             $directories[] = [
                 'name' => $item,
                 'path' => $relItemPath,
                 'isDir' => true,
                 'subCount' => $subCount,
                 'size' => 0,
-                'mtime' => filemtime($fullItemPath),
-                'mtimeFormatted' => date('M d, Y h:i A', filemtime($fullItemPath)),
+                'mtime' => $mtime,
+                'mtimeFormatted' => date('M d, Y h:i A', $mtime),
             ];
         } elseif (is_file($fullItemPath)) {
             $fsize = filesize($fullItemPath);
             $totalSize += $fsize;
             $finfo = getFileInfo($fullItemPath);
+            $fmtime = filemtime($fullItemPath);
             
             $files[] = [
                 'name' => $item,
@@ -563,8 +699,8 @@ if ($items !== false) {
                 'isDir' => false,
                 'size' => $fsize,
                 'sizeFormatted' => formatFileSize($fsize),
-                'mtime' => filemtime($fullItemPath),
-                'mtimeFormatted' => date('M d, Y h:i A', filemtime($fullItemPath)),
+                'mtime' => $fmtime,
+                'mtimeFormatted' => date('M d, Y h:i A', $fmtime),
                 'category' => $finfo['category'],
                 'extension' => $finfo['extension'],
                 'mime' => $finfo['mime'],
@@ -604,6 +740,7 @@ foreach ($files as $f) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="csrf-token" content="<?= htmlspecialchars($_SESSION['csrf_token']) ?>">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title><?= htmlspecialchars($relDir ? basename($relDir) . ' - ' . APP_NAME : APP_NAME) ?></title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -747,6 +884,16 @@ foreach ($files as $f) {
                     <line x1="12" y1="3" x2="12" y2="15"></line>
                 </svg>
                 <span>Upload File</span>
+            </button>
+
+            <!-- New Folder Button -->
+            <button type="button" class="btn-action" id="newFolderBtn" title="Create a new folder in the current directory">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                    <line x1="12" y1="11" x2="12" y2="17"></line>
+                    <line x1="9" y1="14" x2="15" y2="14"></line>
+                </svg>
+                <span>New Folder</span>
             </button>
 
             <!-- Filter & Sort Controls Row -->
@@ -944,6 +1091,13 @@ foreach ($files as $f) {
                                         </svg>
                                         Open Folder
                                     </a>
+                                    <button type="button" class="btn-action btn-danger" onclick="event.stopPropagation(); deleteItem('<?= htmlspecialchars(addslashes($dir['path'])) ?>', '<?= htmlspecialchars(addslashes($dir['name'])) ?>', true)" title="Delete folder">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <polyline points="3 6 5 6 21 6"></polyline>
+                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                                        </svg>
+                                        Delete
+                                    </button>
                                 </div>
                             </div>
                         <?php endforeach; ?>
@@ -1048,6 +1202,13 @@ foreach ($files as $f) {
                                         </svg>
                                         Download
                                     </a>
+                                    <button type="button" class="btn-action btn-danger" onclick="deleteItem('<?= htmlspecialchars(addslashes($file['path'])) ?>', '<?= htmlspecialchars(addslashes($file['name'])) ?>', false)" title="Delete file">
+                                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <polyline points="3 6 5 6 21 6"></polyline>
+                                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>
+                                        </svg>
+                                        Delete
+                                    </button>
                                 </div>
                             </div>
                         <?php endforeach; ?>
@@ -1088,6 +1249,7 @@ foreach ($files as $f) {
                                         <a href="?dir=<?= urlencode($dir['path']) ?>" class="btn-action btn-primary" style="padding: 0.35rem 0.65rem;">
                                             Open
                                         </a>
+                                        <button type="button" class="btn-action btn-danger" style="padding: 0.35rem 0.5rem;" onclick="deleteItem('<?= htmlspecialchars(addslashes($dir['path'])) ?>', '<?= htmlspecialchars(addslashes($dir['name'])) ?>', true)" title="Delete folder">Delete</button>
                                     </div>
                                 </td>
                             </tr>
@@ -1128,6 +1290,7 @@ foreach ($files as $f) {
                                             </svg>
                                             Download
                                         </a>
+                                        <button type="button" class="btn-action btn-danger" style="padding: 0.35rem 0.5rem;" onclick="deleteItem('<?= htmlspecialchars(addslashes($file['path'])) ?>', '<?= htmlspecialchars(addslashes($file['name'])) ?>', false)" title="Delete file">Delete</button>
                                     </div>
                                 </td>
                             </tr>
@@ -1166,7 +1329,7 @@ foreach ($files as $f) {
                 <div class="modal-title-group">
                     <span class="type-badge badge-pdf-bg" style="font-size: 0.7rem;">50 MB MAX</span>
                     <h3 class="modal-title">Upload Files</h3>
-                    <span class="meta-pill" style="font-size: 0.75rem;">To: /resource/<?= htmlspecialchars($relDir ? $relDir : '') ?></span>
+                    <span id="uploadTargetLabel" class="meta-pill" style="font-size: 0.75rem;">To: /resource/<?= htmlspecialchars($relDir ? $relDir : '') ?></span>
                 </div>
                 <button type="button" class="btn-icon" onclick="closeUploadModal()" title="Close (Esc)">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -1176,6 +1339,32 @@ foreach ($files as $f) {
                 </button>
             </div>
             <div class="upload-modal-content">
+                <!-- Directory Picker -->
+                <div class="upload-dir-section">
+                    <div class="upload-dir-row">
+                        <span class="upload-dir-label">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                            </svg>
+                            Save to:
+                        </span>
+                        <select id="uploadDirSelect" class="sort-select" style="flex:1; min-width:0;"></select>
+                        <button type="button" class="btn-action" id="newSubfolderBtn" title="Create a new subfolder">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                                <line x1="12" y1="11" x2="12" y2="17"></line>
+                                <line x1="9" y1="14" x2="15" y2="14"></line>
+                            </svg>
+                            New Folder
+                        </button>
+                    </div>
+                    <div id="newSubfolderForm" style="display:none;" class="upload-dir-row">
+                        <input type="text" id="newSubfolderNameInput" class="search-input" placeholder="New folder name..." style="flex:1; padding:0.35rem 0.65rem; font-size:0.8rem;" autocomplete="off">
+                        <button type="button" class="btn-action btn-primary" id="confirmSubfolderBtn">Create</button>
+                        <button type="button" class="btn-action" id="cancelSubfolderBtn">Cancel</button>
+                    </div>
+                </div>
+
                 <!-- Dropzone Area -->
                 <div id="dropzone" class="upload-dropzone">
                     <input type="file" id="fileUploadInput" multiple style="display: none;">
@@ -1326,6 +1515,39 @@ foreach ($files as $f) {
                         </div>
                         <div id="clipHistoryList" class="clipboard-history-list" style="display: none;"></div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Folder Modal -->
+    <div id="newFolderModal" class="modal-overlay" onclick="handleNewFolderOverlayClick(event)">
+        <div class="modal-container" style="max-width:440px;">
+            <div class="modal-header">
+                <div class="modal-title-group">
+                    <h3 class="modal-title">Create New Folder</h3>
+                    <span class="meta-pill" style="font-size:0.75rem;">In: /resource/<?= htmlspecialchars($relDir ?: '') ?></span>
+                </div>
+                <button type="button" class="btn-icon" onclick="closeNewFolderModal()" title="Close (Esc)">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+            <div class="new-folder-modal-body">
+                <input type="text" id="newFolderNameInput" class="search-input" placeholder="Folder name..." autocomplete="off" style="font-size:0.95rem; padding:0.65rem 0.85rem;">
+                <p id="newFolderError" style="display:none; color:#dc2626; font-size:0.8rem; margin-top:0.1rem;"></p>
+                <div class="new-folder-modal-actions">
+                    <button type="button" class="btn-action" onclick="closeNewFolderModal()">Cancel</button>
+                    <button type="button" class="btn-action btn-primary" id="confirmNewFolderBtn">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                            <line x1="12" y1="11" x2="12" y2="17"></line>
+                            <line x1="9" y1="14" x2="15" y2="14"></line>
+                        </svg>
+                        Create Folder
+                    </button>
                 </div>
             </div>
         </div>

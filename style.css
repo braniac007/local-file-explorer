@@ -740,11 +740,12 @@ main.explorer-container {
     display: flex;
     align-items: center;
     gap: 0.5rem;
+    flex-wrap: wrap;
 }
 
 .btn-action {
     flex: 1;
-    min-width: 0;         /* Allow button to shrink below content size */
+    min-width: fit-content;
     padding: 0.45rem 0.5rem;
     font-size: 0.8rem;
     font-weight: 600;
@@ -779,6 +780,73 @@ main.explorer-container {
 .btn-action.btn-primary:hover {
     background: var(--primary-hover);
     color: #ffffff;
+}
+
+.btn-action.btn-danger {
+    background: transparent;
+    color: #dc2626;
+    border-color: #fca5a5;
+}
+
+.btn-action.btn-danger:hover {
+    background: #fee2e2;
+    color: #b91c1c;
+    border-color: #dc2626;
+}
+
+[data-theme="dark"] .btn-action.btn-danger {
+    color: #f87171;
+    border-color: #7f1d1d;
+}
+
+[data-theme="dark"] .btn-action.btn-danger:hover {
+    background: rgba(220, 38, 38, 0.15);
+    color: #fca5a5;
+    border-color: #ef4444;
+}
+
+/* Upload modal directory picker */
+.upload-dir-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.65rem 0.85rem;
+    background: var(--bg-surface-alt);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    margin-bottom: 0.75rem;
+}
+
+.upload-dir-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+
+.upload-dir-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+/* New folder modal */
+.new-folder-modal-body {
+    padding: 1.25rem 1.5rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.new-folder-modal-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    margin-top: 0.25rem;
 }
 
 /* List View Layout */
